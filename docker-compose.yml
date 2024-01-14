@@ -1,0 +1,120 @@
+version: '3.8'
+
+name: mytube
+
+services:
+  reverse-proxy:
+    restart: on-failure
+    image: traefik:2.10
+    ports:
+      - "80:80"
+      - "1025:1025"
+      - "5432:5432"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command:
+      - --log.level=INFO
+      - --accesslog.filepath=/var/log/access.log
+      - --accesslog.bufferingsize=100
+      - --api.dashboard=true
+      - --providers.docker
+      - --entrypoints.web.address=:80
+      - --entrypoints.mail.address=:1025
+      - --entrypoints.db.address=:5432
+    labels:
+      - traefik.http.routers.dashboard.rule=Host(`traefik.mytube.test`) && PathPrefix(`/api`, `/dashboard`)
+      - traefik.http.routers.dashboard.service=api@internal
+      - traefik.http.routers.dashboard.middlewares=auth
+      - traefik.http.middlewares.auth.basicauth.users=admin:$$2a$$12$$ujfhuxcYz8BTIgTVH13dru9fyLucun8.DqdF/5zD08CJ02CVaMa4i #admin:password
+
+  db:
+    restart: on-failure
+    image: postgres:15.3
+    expose:
+      - 5432
+    volumes:
+      - mytube-db-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: username
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: database
+    labels:
+      - traefik.tcp.routers.db.rule=HostSNI(`*`)
+      - traefik.tcp.routers.db.entrypoints=db
+
+  mail:
+    restart: on-failure
+    image: axllent/mailpit
+    expose:
+      - 1025
+      - 8025
+    labels:
+      - traefik.tcp.routers.mail.rule=HostSNI(`*`)
+      - traefik.tcp.routers.mail.entrypoints=mail
+      - traefik.http.routers.mail-web.rule=Host(`mail.mytube.test`)
+      - traefik.http.routers.mail-web.entrypoints=web
+      - traefik.http.routers.mail-web.service=mail-web
+      - traefik.http.services.mail-web.loadbalancer.server.port=8025
+
+  api:
+    restart: on-failure
+    depends_on:
+      - db
+    build:
+      context: ../mytube-api
+      dockerfile: ../mytube-container/Dockerfile
+      target: api
+    image: mytube-api
+    volumes:
+      - ../mytube-api/:/app/
+      - /app/node_modules/
+    command: sh -c "yarn prisma migrate dev && yarn prisma generate && yarn dev"
+    expose:
+      - "3000"
+    env_file:
+      - ../mytube-api/.env
+    labels:
+      - traefik.http.routers.api.rule=Host(`api.mytube.test`)
+      - traefik.http.routers.api.entrypoints=web
+
+  app:
+    restart: on-failure
+    build:
+      context: ../mytube-app
+      dockerfile: ../mytube-container/Dockerfile
+      target: app
+    image: mytube-app
+    volumes:
+      - ../mytube-app/:/app/
+      - /app/node_modules/
+    command: sh -c "yarn dev --host 0.0.0.0"
+    expose:
+      - "5173"
+    env_file:
+      - ../mytube-app/.env.local
+    labels:
+      - traefik.http.routers.app.rule=Host(`mytube.test`)
+      - traefik.http.routers.app.entrypoints=web
+
+  studio:
+    restart: on-failure
+    build:
+      context: ../mytube-studio
+      dockerfile: ../mytube-container/Dockerfile
+      target: studio
+    image: mytube-studio
+    volumes:
+      - ../mytube-studio/:/app/
+      - /app/node_modules/
+    command: sh -c "yarn dev --host 0.0.0.0"
+    expose:
+      - "5173"
+    env_file:
+      - ../mytube-studio/.env.local
+    labels:
+      - traefik.http.routers.studio.rule=Host(`studio.mytube.test`)
+      - traefik.http.routers.studio.entrypoints=web
+
+volumes:
+  mytube-db-data:
+    external: true
